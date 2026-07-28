@@ -3,6 +3,7 @@ import logging
 import random
 import os
 import sqlite3
+import signal
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -123,15 +124,44 @@ async def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
 
-    # Schedule daily lesson at 9:00 AM UTC
+    # Scheduler
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(send_daily_lessons, "cron", hour=9, minute=0, args=[app])
     scheduler.start()
     logger.info("✅ Scheduler started. Daily lessons at 9:00 AM UTC.")
 
-    # Start polling – this will run until you stop it (Ctrl+C or Render stops)
-    # run_polling() handles SIGINT/SIGTERM internally, no custom signals needed.
-    await app.run_polling()
+    # Start polling manually (not using run_polling)
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+
+    # Create shutdown event
+    shutdown_event = asyncio.Event()
+
+    def handle_signal():
+        asyncio.create_task(shutdown_task())
+
+    async def shutdown_task():
+        logger.info("Shutdown signal received. Stopping gracefully...")
+        shutdown_event.set()
+
+    # Register signal handlers
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, handle_signal)
+
+    logger.info("🚀 Bot is running and polling. Press Ctrl+C to stop.")
+    await shutdown_event.wait()
+
+    # Stop everything in correct order
+    logger.info("Stopping updater...")
+    await app.updater.stop()
+    logger.info("Stopping application...")
+    await app.stop()
+    await app.shutdown()
+    logger.info("Stopping scheduler...")
+    scheduler.shutdown(wait=False)
+    logger.info("✅ Shutdown complete.")
 
 if __name__ == "__main__":
     asyncio.run(main())
